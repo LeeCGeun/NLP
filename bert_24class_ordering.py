@@ -25,7 +25,7 @@ train_dataset = Dataset.from_pandas(pd.DataFrame(train_data))
 valid_dataset = Dataset.from_pandas(pd.DataFrame(valid_data))
 
 # 3. 모델 및 토크나이저 로드
-model_name = "klue/roberta-base"  # 또는 "bert-base-multilingual-cased"
+model_name = "klue/roberta-base"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=24)
 
@@ -38,11 +38,11 @@ tokenized_valid = valid_dataset.map(tokenize, batched=True)
 
 # 5. 학습 설정
 training_args = TrainingArguments(
-    output_dir="./bert_24cls_results",
+    output_dir="./bert_24cls_30epoch_results",
     learning_rate=2e-5,
     per_device_train_batch_size=16,
     per_device_eval_batch_size=16,
-    num_train_epochs=5,
+    num_train_epochs=30,
     evaluation_strategy="epoch",
     save_strategy="epoch",
     load_best_model_at_end=True,
@@ -61,21 +61,28 @@ trainer = Trainer(
 )
 
 trainer.train()
-model.save_pretrained("./bert_24cls_results")
-tokenizer.save_pretrained("./bert_24cls_results")
+model.save_pretrained("./bert_24cls_30epoch_results")
+tokenizer.save_pretrained("./bert_24cls_30epoch_results")
 
-# 7. Inference 및 제출 파일 생성
+# 7. Inference (batch 처리로 OOM 방지)
 test = pd.read_csv("./test.csv")
 sentences = test[[f"sentence_{i}" for i in range(4)]].values.tolist()
 inputs = [" [SEP] ".join(s) for s in sentences]
 
-encodings = tokenizer(inputs, padding="max_length", truncation=True, max_length=512, return_tensors="pt")
 model.eval()
-model.to("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
 
+batch_size = 32
+pred_ids = []
 with torch.no_grad():
-    outputs = model(**{k: v.to(model.device) for k, v in encodings.items()})
-    pred_ids = outputs.logits.argmax(dim=1).cpu().numpy()
+    for i in range(0, len(inputs), batch_size):
+        batch_inputs = inputs[i:i+batch_size]
+        batch_enc = tokenizer(batch_inputs, padding="max_length", truncation=True, max_length=512, return_tensors="pt")
+        batch_enc = {k: v.to(device) for k, v in batch_enc.items()}
+        output = model(**batch_enc)
+        batch_preds = output.logits.argmax(dim=1).cpu().tolist()
+        pred_ids.extend(batch_preds)
 
 pred_orders = [id2perm[i] for i in pred_ids]
 
@@ -83,5 +90,5 @@ submission = pd.read_csv("./sample_submission.csv")
 for i in range(4):
     submission[f"answer_{i}"] = [pred[i] for pred in pred_orders]
 
-submission.to_csv("bert_24class_submission.csv", index=False)
-print("✅ Submission saved to 'bert_24class_submission.csv'")
+submission.to_csv("bert_24cls_30epoch_results.csv", index=False)
+print("✅ Submission saved to 'bert_24cls_30epoch_results.csv'")
